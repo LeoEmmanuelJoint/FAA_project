@@ -56,14 +56,15 @@ frameRate = 25
 # Paths to the models and their results by default
 
 pathDict = {
-    'pathModel_CNN': "../CNN/CNN_V9_86/FERmodel_CNN.json",
-    'pathModel_weights_CNN': "../CNN/CNN_V9_86/FERmodel_CNN.h5",
-    'pathRes_CNN': "../CNN/CNN_V9_86/history_dict_bin.pkl",
-    'pathRes_SVM': "",
+    'pathModel_CNN': "../CNN/CNN_V10_87/FERmodel_CNN.json",
+    'pathModel_weights_CNN': "../CNN/CNN_V10_87/FERmodel_CNN.h5",
+    'pathRes_CNN': "../CNN/CNN_V10_87/history_dict_bin.pkl",
+    'pathRes_SVM': "../SVM/history_dict_svm1_bin.pkl",
     'pathRes_RFC': "../Random Forest/test_performance_metrics_bin.pkl",
     'pathModel_SVM': "../SVM/svm_model.pkl",
     'pathModel_RFC': "../Random Forest/emotion_model.pkl",
-    'pathHaarCascade': "./haarcascade_frontalface_default.xml"
+    'pathHaarCascade': "./haarcascade_frontalface_default.xml",
+    'pathModel_PCA': "../Random Forest/pca_model1.pkl"
 }
 
 emotionsDict = {
@@ -96,6 +97,7 @@ class Processing:
         self.pathModelSVM = dictPaths['pathModel_SVM']
         self.pathModelRFC = dictPaths['pathModel_RFC']
         self.pathHaarCascade = dictPaths['pathHaarCascade']
+        self.pathPCA = dictPaths['pathModel_PCA']
 
         self.face_detector = cv.CascadeClassifier(self.pathHaarCascade)
 
@@ -141,11 +143,28 @@ class Processing:
 
         print("Model loaded")
 
-    def extract_features(self, image):
+    def extract_features(image):
         # Appliquer le descripteur HOG
-        features = hog(image, orientations=9, pixels_per_cell=(8, 8), cells_per_block=(2, 2), visualize=False)
+        hog_features = hog(image, orientations=9, pixels_per_cell=(8, 8), cells_per_block=(2, 2), visualize=False)
+        return hog_features
 
-        return np.array(features)
+    def load_pca_model(self, pca_filename, features):
+        """try:
+            loaded_pca = pickle.load(open(pca_filename, 'rb'))
+        except FileNotFoundError:
+            print("PCA Model file not found, creating it with 60 components")
+            loaded_pca = None
+
+        if loaded_pca is None:
+            pca = PCA(n_components=60)
+            pca.fit(features)
+        else:
+            pca = loaded_pca
+        """
+        pca = PCA(n_components=60)
+        pca.fit(features)
+
+        return pca
 
     def detect_on_image_path(self, pathImage):
 
@@ -154,6 +173,58 @@ class Processing:
         print("File opened")
         print("Beginning detection on image...")
         return self.detect_on_image(image)
+
+    # Étape 2 : Charger le modèle PCA à partir du fichier ou effectuer PCA avec 60 composantes si le fichier n'est pas trouvé
+    def load_pca_model(self, pca_filename, features):
+        try:
+            loaded_pca = pickle.load(open(pca_filename, 'rb'))
+        except FileNotFoundError:
+            loaded_pca = None
+
+        if loaded_pca is None:
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=60)
+            pca.fit(features)
+        else:
+            pca = loaded_pca
+
+        return pca
+    def preprocess_image_RFC(self, image):
+        # Charger l'image en niveaux de gris
+        #image = cv2.imread(image_path, 0)
+        image = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+        # Redimensionner l'image
+        image = cv.resize(image, (48, 48))
+        return image
+    def extract_features(self, image):
+        # Appliquer le descripteur HOG
+        hog_features = hog(image, orientations=9, pixels_per_cell=(8, 8), cells_per_block=(2, 2), visualize=False)
+        return hog_features
+    def get_prediction_nb_RFC(self, face_img):
+
+        # Prétraiter l'image
+        #image = self.preprocess_image_RFC(face_img)
+        # Extraire les caractéristiques (HOG) de l'image
+        features = self.extract_features(face_img)
+        # Charger le modèle PCA à partir du fichier ou effectuer PCA avec 60 composantes
+        pca = self.load_pca_model(self.pathPCA, [features])
+        # Réduire les caractéristiques de l'image en utilisant les composantes principales de PCA
+        features_pca = pca.transform([features])
+        # Prédire l'émotion
+        emotion_index = self.FERModel.predict(features_pca)[0]
+
+        return emotion_index
+
+    def get_prediction_nb_CNN(self, face_img):
+
+        input_image = cv.resize(face_img, (48, 48))
+        input_image = input_image / 255
+        input_image = np.expand_dims(input_image, axis=0)
+
+        # Predict the emotion
+        predictions = self.FERModel.predict(input_image)
+        best = np.argmax(predictions[0])
+        return(best)
 
     def detect_on_image(self, image):
 
@@ -172,23 +243,12 @@ class Processing:
             # Crop the face from the image
             cropped_face = gray_img[y:y + h, x:x + w]
 
-            input_image = cv.resize(cropped_face, (48, 48))
-            input_image = input_image/255
-
             if self.currentModelName == "CNN":
-                input_image = np.expand_dims(input_image, axis=0)
-            else:
-                input_image = np.squeeze(input_image)
-                input_image = self.extract_features(input_image)
+                prediction = self.get_prediction_nb_CNN(cropped_face)
+            elif self.currentModelName == "RFC":
+                prediction = self.get_prediction_nb_RFC(cropped_face)
 
-            """# Feature extraction (depends on the model)
-            elif (self.currentModelName == "SVM" or self.currentModelName == "RFC") :
-                input_image = input_image.flatten()
-                input_image = self.pca.fit_transform(input_image)"""
-
-            # Predict the emotion
-            predictions = self.FERModel.predict(input_image)
-            emotion_predicted = self.dict_emotions[np.argmax(predictions[0])]
+            emotion_predicted = self.dict_emotions[prediction]
 
             print("Detection " + emotion_predicted)
 
@@ -206,11 +266,11 @@ class Processing:
         conf_matrix = self.dict_res["test_cf_matrix"]
         conf_matrix = np.array2string(conf_matrix, precision=2, separator=' ', suppress_small=True)
         accuracy = self.dict_res["test_accuracy"]
-        #kappa = self.dict_res["test_kappa"]
+        kappa = self.dict_res["test_kappa"]
         report = self.dict_res["test_report"]
-        res = "Accuracy: "+str(accuracy)+\
+        res = "Accuracy: "+str(accuracy)+ \
+              "\n\nKappa: " + str(kappa) + \
               "\n\nClassification report: \n"+report+"\n\nConfusion matrix: \n"+conf_matrix
-        # "\n\nKappa: " + str(kappa) +\
         print(res)
         return(res)
 
@@ -289,6 +349,8 @@ class Interface(ttk.Frame):
         # Interactions and bindings
 
         self.modelId_gui.trace_add(mode="write", callback=self.onSelectModel)
+
+        self.modelId_gui.set(0) # Initialisation à l'affichage du CNN
 
     def onSelectModel(self, *args):
         self.close_videoStream()
